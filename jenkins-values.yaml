@@ -1,13 +1,3 @@
-# Default values for jenkins.
-# This is a YAML-formatted file.
-# Declare name/value pairs to be passed into your templates.
-# name: value
-
-## Overrides for generated resource names
-# See templates/_helpers.tpl
-# nameOverride:
-# fullnameOverride:
-
 Master:
   Image: "jenkins/jenkins"
   ImageTag: "2.109"
@@ -15,34 +5,218 @@ Master:
   AdminUser: admin
   AdminPassword: admin
 
+  # Ingress
+  ServiceType: ClusterIP
+  HostName: test-jenkins.k8s-new.lbg.eu-gb.mybluemix.net
+
   InstallPlugins:
-    - kubernetes:1.3.1
+    - kubernetes:1.3.2
+    - workflow-aggregator:2.5
     - credentials-binding:1.15
     - git:3.8.0
+    - rebuild:1.27
+    - ws-cleanup:0.34
+    - lockable-resources:2.2
+
+  InstallPluginsProxy: 10.113.140.187:3128
 
   InitScripts:
-  #  - |
-  #    print 'adding global pipeline libraries, register properties, bootstrap jobs...'
+    - |
+      // executors
+      import jenkins.model.*
+
+      def instance = Jenkins.getInstance()
+      instance.setNumExecutors(1)
+
+    - |
+      // plugin proxy
+      import jenkins.model.*
+
+      final String name = "10.113.140.187"
+      final int port = 3128
+      final String userName = ""
+      final String password = ""
+      final String noProxyHost = ""
+
+      def instance = Jenkins.getInstance()
+      def pc = new hudson.ProxyConfiguration(name, port, userName, password, noProxyHost)
+      instance.proxy = pc
+      instance.save()
+      println "Proxy settings updated!"
+
+    - |
+      // kube admin credential
+      import jenkins.model.*
+
+      def id = "kube-admin"
+      def description = "Kubernetes admin"
+      def username = "admin"
+      def password = "london2017"
+
+      def instance = Jenkins.getInstance()
+      def domain = com.cloudbees.plugins.credentials.domains.Domain.global()
+      def store = instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0].getStore()
+
+      def git_cred = new com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl(
+          com.cloudbees.plugins.credentials.CredentialsScope.GLOBAL,
+          id,
+          description,
+          username,
+          password
+      )
+      store.addCredentials(domain, git_cred)
+      println "Created user credentials"
+
+    - |
+      // GHE credentials
+      import com.cloudbees.jenkins.plugins.sshcredentials.impl.*
+      import com.cloudbees.plugins.credentials.*
+      import com.cloudbees.plugins.credentials.common.*
+      import com.cloudbees.plugins.credentials.domains.*
+      import com.cloudbees.plugins.credentials.impl.*
+      import jenkins.model.*;
+
+      def id = "jacek.slachta"
+      def description = "jacek.slachta"
+      def username = "jacek.slachta"
+      def password = ""
+      def private_key = '''
+      '''
+
+      def global_domain = Domain.global()
+      def credentials_store = Jenkins.instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0].getStore()
+
+      def key_source = new BasicSSHUserPrivateKey.DirectEntryPrivateKeySource(private_key)
+      def credentials = new BasicSSHUserPrivateKey(
+        CredentialsScope.GLOBAL,
+        id,
+        username,
+        key_source,
+        password,
+        description
+      )
+
+      credentials_store.addCredentials(global_domain, credentials)
+      println "Created user credentials"
+
+    - |
+      // global build lib
+      import jenkins.model.*
+      import org.jenkinsci.plugins.workflow.libs.SCMSourceRetriever;
+      import org.jenkinsci.plugins.workflow.libs.LibraryConfiguration;
+      import jenkins.plugins.git.GitSCMSource;
+
+      def name = "build-lib"
+      def repo = "git@github.lbg.eu-gb.bluemix.net:jacek-slachta/build-lib.git"
+      def credentialId = "jacek.slachta"
+      def defaultVersion = "master"
+
+      def globalLibsDesc = Jenkins.getInstance().getDescriptor("org.jenkinsci.plugins.workflow.libs.GlobalLibraries")
+      SCMSourceRetriever retriever = new SCMSourceRetriever(new GitSCMSource(
+              "someScmId",
+              repo,
+              credentialId,
+              "*",
+              "",
+              false))
+
+      LibraryConfiguration pipeline = new LibraryConfiguration(name, retriever)
+      pipeline.setDefaultVersion(defaultVersion)
+      pipeline.setImplicit(false)
+
+      globalLibsDesc.get().setLibraries([pipeline])
+
+    - |
+      // K8S cluster setup
+      import org.csanchez.jenkins.plugins.kubernetes.*
+      import jenkins.model.*
+
+      def name = "kubernetes"
+      def clusterUrl = "https://shared-jenk-17.sandbox.local:6443"
+      def namespace = "${System.getenv("POD_NAMESPACE")}"
+      def jenkinsUrl = "http://${System.getenv("POD_IP")}:${System.getenv("JENKINS_SERVICE_PORT")}/"
+      def credentialId = "kube-admin"
+
+      def j = Jenkins.getInstance()
+      def k = new KubernetesCloud(
+        name,
+        null,
+        clusterUrl,
+        namespace,
+        jenkinsUrl,
+        "10", 0, 0, 5
+      )
+      k.setSkipTlsVerify(true)
+      k.setCredentialsId(credentialId)
+
+      j.clouds.replace(k)
+      j.save()
+
   # Kubernetes secret that contains a 'credentials.xml' for Jenkins
   # CredentialsXmlSecret: jenkins-credentials
   # Kubernetes secret that contains files to be put in the Jenkins 'secrets' directory,
   # useful to manage encryption keys used for credentials.xml for instance (such as
   # master.key and hudson.util.Secret)
   # SecretsFilesSecret: jenkins-secrets
-  # Jenkins XML job configs to provision
-  # Jobs: |-
-  #   test: |-
-  #     <<xml here>>
 
-  Ingress:
-    Annotations:
-      kubernetes.io/ingress.class: nginx
-      kubernetes.io/tls-acme: "true"
+  Jobs: |-
+    swift-pipeline-test-project: |-
+      <?xml version='1.1' encoding='UTF-8'?>
+      <org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject plugin="workflow-multibranch@2.17">
+        <actions/>
+        <description></description>
+        <properties>
+          <org.jenkinsci.plugins.pipeline.modeldefinition.config.FolderConfig plugin="pipeline-model-definition@1.2.7">
+            <dockerLabel></dockerLabel>
+            <registry plugin="docker-commons@1.11"/>
+          </org.jenkinsci.plugins.pipeline.modeldefinition.config.FolderConfig>
+        </properties>
+        <folderViews class="jenkins.branch.MultiBranchProjectViewHolder" plugin="branch-api@2.0.18">
+          <owner class="org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject" reference="../.."/>
+        </folderViews>
+        <healthMetrics>
+          <com.cloudbees.hudson.plugins.folder.health.WorstChildHealthMetric plugin="cloudbees-folder@6.3">
+            <nonRecursive>false</nonRecursive>
+          </com.cloudbees.hudson.plugins.folder.health.WorstChildHealthMetric>
+        </healthMetrics>
+        <icon class="jenkins.branch.MetadataActionFolderIcon" plugin="branch-api@2.0.18">
+          <owner class="org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject" reference="../.."/>
+        </icon>
+        <orphanedItemStrategy class="com.cloudbees.hudson.plugins.folder.computed.DefaultOrphanedItemStrategy" plugin="cloudbees-folder@6.3">
+          <pruneDeadBranches>true</pruneDeadBranches>
+          <daysToKeep>-1</daysToKeep>
+          <numToKeep>-1</numToKeep>
+        </orphanedItemStrategy>
+        <triggers/>
+        <disabled>false</disabled>
+        <sources class="jenkins.branch.MultiBranchProject$BranchSourceList" plugin="branch-api@2.0.18">
+          <data>
+            <jenkins.branch.BranchSource>
+              <source class="jenkins.plugins.git.GitSCMSource" plugin="git@3.8.0">
+                <id>d1c51838-34ea-420f-8196-10565a5e113e</id>
+                <remote>git@github.lbg.eu-gb.bluemix.net:jacek-slachta/swift-pipeline-test-project.git</remote>
+                <credentialsId>jacek.slachta</credentialsId>
+                <traits>
+                  <jenkins.plugins.git.traits.BranchDiscoveryTrait/>
+                </traits>
+              </source>
+              <strategy class="jenkins.branch.DefaultBranchPropertyStrategy">
+                <properties class="empty-list"/>
+              </strategy>
+            </jenkins.branch.BranchSource>
+          </data>
+          <owner class="org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject" reference="../.."/>
+        </sources>
+        <factory class="org.jenkinsci.plugins.workflow.multibranch.WorkflowBranchProjectFactory">
+          <owner class="org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject" reference="../.."/>
+          <scriptPath>Jenkinsfile</scriptPath>
+        </factory>
+      </org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject>
 
-    TLS:
-    # - secretName: jenkins.cluster.local
-    #   hosts:
-    #     - jenkins.cluster.local
+Persistence:
+  Enabled: false
 
 Agent:
   Enabled: false
+
+# TODO: sort out credentials - secrets or vault
