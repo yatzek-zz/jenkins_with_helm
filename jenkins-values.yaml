@@ -1,6 +1,6 @@
 Master:
   Image: "jenkins/jenkins"
-  ImageTag: "2.113"
+  ImageTag: "2.114"
   Component: "master"
   AdminUser: admin
   AdminPassword: admin
@@ -11,7 +11,7 @@ Master:
   HealthProbesTimeout: 60
 
   InstallPlugins:
-    - kubernetes:1.4.1
+    - kubernetes:1.5
     - workflow-aggregator:2.5
     - credentials-binding:1.16
     - git:3.8.0
