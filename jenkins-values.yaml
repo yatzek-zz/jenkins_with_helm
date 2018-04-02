@@ -5,6 +5,11 @@ Master:
   AdminUser: admin
   AdminPassword: admin
 
+  Cpu: "200m"
+  Memory: "512Mi"
+  HealthProbes: true
+  HealthProbesTimeout: 60
+
   InstallPlugins:
     - kubernetes:1.4.1
     - workflow-aggregator:2.5
